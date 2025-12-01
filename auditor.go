@@ -33,65 +33,92 @@ func main() {
 	}
 
 	// =========================================================================
-	// AUDITORIA DE ATIVOS (CARTAS)
+	// 1. AUDITORIA DE CRIAÇÃO (MINT)
 	// =========================================================================
 	
 	iterCards, err := instance.FilterCardMinted(&bind.FilterOpts{Start: 0})
 	if err != nil {
 		log.Printf("Aviso: Não foi possível ler histórico de cartas: %v", err)
 	} else {
-		fmt.Println("\n=== LIVRO RAZÃO: ATIVOS DIGITAIS (CARTAS) ===")
+		fmt.Println("\n=== LIVRO RAZÃO: CRIAÇÃO DE ATIVOS (MINT) ===")
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(w, "BLOCO\t| ID (HASH)\t| RARIDADE\t| DONO (WALLET)")
+		fmt.Fprintln(w, "BLOCO\t| ID (HASH)\t| RARIDADE\t| DONO INICIAL")
 		fmt.Fprintln(w, "-----\t| ---------\t| --------\t| -------------")
 
 		countCards := 0
 		for iterCards.Next() {
 			event := iterCards.Event
 			idShort := event.Id.String()
-			if len(idShort) > 12 {
-				idShort = idShort[:12] + "..."
-			}
+			if len(idShort) > 12 { idShort = idShort[:12] + "..." }
+			
 			fmt.Fprintf(w, "#%d\t| %s\t| %s\t| %s\n",
 				event.Raw.BlockNumber, idShort, event.Rarity, event.Owner.Hex())
 			countCards++
 		}
 		w.Flush()
-		fmt.Printf("Total de Cartas: %d\n", countCards)
+		fmt.Printf("Total de Cartas Criadas: %d\n", countCards)
 	}
 
 	// =========================================================================
-	// AUDITORIA DE PARTIDAS (MATCHES)
+	// 2. AUDITORIA DE TRANSFERÊNCIAS (TROCAS) - NOVO!
 	// =========================================================================
 
-	// Filtra eventos MatchRecorded
-	// CORREÇÃO: Removemos os argumentos 'nil' extras. A função só aceita FilterOpts.
+	iterTransfers, err := instance.FilterCardTransferred(&bind.FilterOpts{Start: 0})
+	if err != nil {
+		// Se der erro aqui, é porque precisa rodar 'abigen' de novo!
+		log.Printf("\nAviso: Não foi possível ler transferências (Verifique o abigen): %v", err)
+	} else {
+		fmt.Println("\n=== LIVRO RAZÃO: HISTÓRICO DE TROCAS (TRANSFERÊNCIAS) ===")
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+		fmt.Fprintln(w, "BLOCO\t| ID CARTA\t| DE (REMETENTE)\t| PARA (DESTINO)")
+		fmt.Fprintln(w, "-----\t| --------\t| --------------\t| --------------")
+
+		countTransfers := 0
+		for iterTransfers.Next() {
+			evt := iterTransfers.Event
+			
+			idShort := evt.Id.String()
+			if len(idShort) > 10 { idShort = idShort[:10] + "..." }
+
+			fromShort := evt.From.Hex()
+			if len(fromShort) > 10 { fromShort = fromShort[:10] + "..." }
+
+			toShort := evt.To.Hex()
+			if len(toShort) > 10 { toShort = toShort[:10] + "..." }
+
+			fmt.Fprintf(w, "#%d\t| %s\t| %s\t| %s\n",
+				evt.Raw.BlockNumber, idShort, fromShort, toShort)
+			countTransfers++
+		}
+		w.Flush()
+		fmt.Printf("Total de Trocas Realizadas: %d\n", countTransfers)
+	}
+
+	// =========================================================================
+	// 3. AUDITORIA DE PARTIDAS (MATCHES)
+	// =========================================================================
+
 	iterMatches, err := instance.FilterMatchRecorded(&bind.FilterOpts{Start: 0})
 	if err != nil {
 		log.Printf("\nAviso: Não foi possível ler histórico de partidas: %v", err)
 	} else {
 		fmt.Println("\n=== LIVRO RAZÃO: HISTÓRICO DE PARTIDAS ===")
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(w, "ID\t| VENCEDOR\t| PERDEDOR\t| PLACAR (V x D)")
-		fmt.Fprintln(w, "--\t| --------\t| --------\t| --------------")
+		fmt.Fprintln(w, "ID\t| VENCEDOR\t| PERDEDOR\t| PLACAR")
+		fmt.Fprintln(w, "--\t| --------\t| --------\t| ------")
 
 		countMatches := 0
 		for iterMatches.Next() {
 			evt := iterMatches.Event
 			
-			// Tenta pegar o placar lendo o array público 'matches' do contrato
-			// O índice no array é (MatchId - 1)
 			matchIndex := new(big.Int).Sub(evt.MatchId, big.NewInt(1))
-			
 			placarStr := "? x ?"
 			
-			// Chama o getter público do array 'matches'
 			matchData, err := instance.Matches(nil, matchIndex)
 			if err == nil {
 				placarStr = fmt.Sprintf("%d x %d", matchData.ScoreWinner, matchData.ScoreLoser)
 			}
 
-			// Formata endereços para não ocupar muito espaço
 			winShort := evt.Winner.Hex()
 			if len(winShort) > 10 { winShort = winShort[:10] + "..." }
 			
@@ -99,10 +126,7 @@ func main() {
 			if len(loseShort) > 10 { loseShort = loseShort[:10] + "..." }
 
 			fmt.Fprintf(w, "%s\t| %s\t| %s\t| %s\n",
-				evt.MatchId.String(),
-				winShort,
-				loseShort,
-				placarStr)
+				evt.MatchId.String(), winShort, loseShort, placarStr)
 			countMatches++
 		}
 		w.Flush()

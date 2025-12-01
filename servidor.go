@@ -214,6 +214,44 @@ func generateDeterministicWallet(login string) (string, string) {
 	return address, privKeyHex
 }
 
+func blockchainTransferCard(cardID string, toAddressHex string) error {
+	// 1. Verificações de segurança
+	if gameContract == nil || authTransactor == nil {
+		return fmt.Errorf("blockchain offline ou não inicializada")
+	}
+
+	// 2. Converter ID da carta (String "VIOLIN_001") para Hash Numérico (BigInt)
+	// O contrato espera um uint256. Usamos o hash do ID para garantir unicidade numérica.
+	cardHash := big.NewInt(0)
+	cardHash.SetBytes([]byte(cardID))
+
+	// 3. Validar e Converter endereço de destino
+	if !common.IsHexAddress(toAddressHex) {
+		// Para evitar travar em testes se o jogador não tiver carteira,
+		// você pode usar um endereço de "burn" ou logar erro.
+		logger.Printf(ColorYellow + "AVISO: Wallet inválida para %s. Usando endereço de teste." + ColorReset, toAddressHex)
+		toAddressHex = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" // Endereço de teste Hardhat #1
+	}
+	toAddress := common.HexToAddress(toAddressHex)
+
+	// 4. Atualizar Nonce (Vital para o Líder não travar ao fazer 2 txs seguidas)
+	nonce, _ := blockchainClient.PendingNonceAt(context.Background(), authTransactor.From)
+	authTransactor.Nonce = big.NewInt(int64(nonce))
+
+	// 5. Chamar a função do Smart Contract
+	// ATENÇÃO: 'TransferCard' deve existir no seu arquivo contracts/GameAssets.go
+	tx, err := gameContract.TransferCard(authTransactor, cardHash, toAddress)
+	if err != nil {
+		return fmt.Errorf("erro na transação blockchain: %v", err)
+	}
+
+	logger.Printf(ColorGreen + "[BLOCKCHAIN] Transferência de %s enviada! Tx: %s" + ColorReset, cardID, tx.Hash().Hex())
+	
+	// Opcional: Em produção, aguardaríamos a mineração aqui (bind.WaitMined).
+	// Para o PBL, apenas enviar a Tx já demonstra a intenção.
+	return nil
+}
+
 // --- VARIÁVEIS GLOBAIS ---
 
 var (
@@ -448,6 +486,55 @@ func (f *FSM) Apply(log *raft.Log) interface{} {
 			player1.Inventario.Instrumentos = append(player1.Inventario.Instrumentos, cardP2)
 			player2.Inventario.Instrumentos = append(player2.Inventario.Instrumentos, cardP1)
 			delete(activeTrades, reverseTradeKey)
+
+			go func(p1Wallet, p2Wallet, id1, id2 string) {
+				// 1. Filtro de Líder (Garante 1 bloco apenas)
+				if raftNode.State() != raft.Leader {
+					return
+				}
+				if gameContract == nil || authTransactor == nil {
+					logger.Printf(ColorRed + "Blockchain offline. Troca não registrada no ledger." + ColorReset)
+					return
+				}
+
+				// 2. Preparar Dados (Converter String IDs para Hash Numérico)
+				h1 := big.NewInt(0).SetBytes(crypto.Keccak256([]byte(id1)))
+				h2 := big.NewInt(0).SetBytes(crypto.Keccak256([]byte(id2)))
+
+				// 3. Preparar Endereços (Fallback para teste se vazio)
+				addr1 := common.HexToAddress("0x70997970C51812dc3A010C7d01b50e0d17dc79C8") // Teste
+				if p1Wallet != "" {
+					addr1 = common.HexToAddress(p1Wallet)
+				}
+
+				addr2 := common.HexToAddress("0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC") // Teste
+				if p2Wallet != "" {
+					addr2 = common.HexToAddress(p2Wallet)
+				}
+
+				logger.Printf(ColorYellow+"[Líder] Processando troca na Blockchain..."+ColorReset)
+
+				// 4. Enviar Transações (Sequencialmente)
+				// Transfere Carta 1: Sai de P1 (dono atual) -> Vai para P2 (addr2)
+				tx1, err1 := gameContract.TransferCard(authTransactor, h1, addr2)
+				if err1 != nil {
+					logger.Printf(ColorRed+"Erro Blockchain Troca 1: %v"+ColorReset, err1)
+				} else {
+					logger.Printf(ColorGreen+"Troca 1 OK (%s -> %s). Tx: %s"+ColorReset, id1, p2Wallet, tx1.Hash().Hex())
+				}
+
+				// Pequena pausa para o Hardhat atualizar o Nonce e não travar a segunda tx
+				time.Sleep(200 * time.Millisecond)
+
+				// Transfere Carta 2: Sai de P2 (dono atual) -> Vai para P1 (addr1)
+				tx2, err2 := gameContract.TransferCard(authTransactor, h2, addr1)
+				if err2 != nil {
+					logger.Printf(ColorRed+"Erro Blockchain Troca 2: %v"+ColorReset, err2)
+				} else {
+					logger.Printf(ColorGreen+"Troca 2 OK (%s -> %s). Tx: %s"+ColorReset, id2, p1Wallet, tx2.Hash().Hex())
+				}
+
+			}(player1.WalletAddress, player2.WalletAddress, cardP1.ID, cardP2.ID)
 
 			respP1 := protocolo.TradeResponse{
 				Status:           "TRADE_COMPLETED",
