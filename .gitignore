@@ -1,0 +1,23 @@
+cat <<EOF > .gitignore
+# Ignorar binários e builds
+/server
+/client
+build/
+
+# Ignorar dados dos servidores
+data/
+logs/
+raft-log.db
+raft-stable.db
+
+# Ignorar dependências do Node (PESADO!)
+node_modules/
+blockchain/node_modules/
+blockchain/artifacts/
+blockchain/cache/
+blockchain/typechain-types/
+
+# Ignorar arquivos de sistema
+.DS_Store
+.vscode/
+EOF
